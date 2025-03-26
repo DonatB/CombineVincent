@@ -8,37 +8,56 @@
 import SwiftUI
 import Combine
 
+enum MyCombineError: Error {
+    case numberTooLow
+}
+
 class ContentViewModel: ObservableObject {
     @Published var totalCharacterCount: Int = 0 // Tracks the total character count
     @Published var myText: String = ""
     private var cancellable: AnyCancellable?
 
-    let publisher = PassthroughSubject<Int, Never>() // Change the Publisher type
+    let publisher = PassthroughSubject<Int, MyCombineError>() // Change the Publisher type
 
     init() {
         cancellable = publisher
-            .map { text in
-                return "Received: " + text
+            .debounce(for: .seconds(1), scheduler: RunLoop.main)
+            .flatMap { number -> AnyPublisher<Int, Never> in // Must return a Publisher
+                if number > 15 {
+                    print("flatMap: Number \(number) is valid. Passing downstream via Just.")
+                    return Just(number)
+                           .eraseToAnyPublisher()
+                } else {
+                    print("flatMap: Number \(number) is too low. Handling and returning Empty.")
+                    return Empty<Int, Never>()
+                           .eraseToAnyPublisher()
+                }
             }
-            .filter { text in
-                return text.count > 15
+            .scan(0) { currentTotal, newValidNumber -> Int in
+                 print("scan: currentTotal=\(currentTotal), newValidNumber=\(newValidNumber)")
+                 return currentTotal + newValidNumber // Only receives numbers > 15
             }
-            .scan( /* Initial value here */, { (currentTotal, newText) in
-               //Your code to define behaviour of scan
-
-            }) // Add scan here
             .removeDuplicates()
-            .sink { [weak self] newTotal in
-                guard let self = self else { return }
-                 self.totalCharacterCount = newTotal
-                print("newTotal \(newTotal)") // Debug print
-            }
+            .sink(receiveCompletion: { completion in
+                // Handles completion (either .finished or .failure(let error))
+                switch completion {
+                case .finished:
+                    print("Pipeline finished successfully.")
+                case .failure(let error):
+                    print("Pipeline failed with error: \(error)")
+                }
+            }, receiveValue: { value in
+                // Handles each value received (like your current .sink)
+                self.totalCharacterCount = value
+                print("Received value: \(value)")
+            })
     }
 }
+
 struct ContentView: View {
     @ObservedObject private var viewModel = ContentViewModel()
     @State private var searchText: String = ""
-     @State private var value = 1
+    @State private var value = 1
 
 
     var body: some View {
@@ -53,18 +72,17 @@ struct ContentView: View {
                 .textFieldStyle(RoundedBorderTextFieldStyle())
                 .padding()
                 .onChange(of: searchText) { newValue in //Send values to PassthroughSubject
-                    viewModel.publisher.send(newValue)
+                    viewModel.publisher.send(newValue.count)
                 }
 
             Button("Send new text") {
-                viewModel.publisher.send("New text here! This many times? \(value)")
+                viewModel.publisher.send(value)
                 value += 1
             }
         }
         .padding()
     }
 }
-
 
 #Preview {
     ContentView()
